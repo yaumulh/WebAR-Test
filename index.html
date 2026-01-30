@@ -4,29 +4,44 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>RS Wayfinder - Starter (QR → AR)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
-    <div id="overlay">
-      <h1>RS Wayfinder — Starter</h1>
-      <div id="status">Menunggu scan QR...</div>
-      <div id="controls" class="hidden">
-        <div id="menu">
-          <button id="btn-admin">Admin Login</button>
-          <button id="btn-add" class="hidden">Add POI</button>
-          <button id="btn-enter" class="hidden">Enter AR</button>
-          <div id="place-controls" class="hidden" style="display:inline-flex; gap:8px; align-items:center;">
-            <button id="btn-confirm-place">Confirm Place</button>
-            <button id="btn-cancel-place">Cancel</button>
+    <div id="overlay" class="panel">
+      <div class="panel-header">
+        <div class="title">RS Wayfinder</div>
+        <div class="subtitle">QR-anchored Indoor AR Navigation</div>
+      </div>
+      <div class="panel-body">
+        <div id="status" class="status">Menunggu scan QR...</div>
+        <div id="controls" class="hidden controls">
+          <div id="menu" class="menu">
+            <div class="menu-left">
+              <button id="btn-admin" class="btn">Admin</button>
+              <button id="btn-add" class="btn btn-primary hidden">+ Add</button>
+              <button id="btn-enter" class="btn btn-primary hidden">Enter AR</button>
+              <button id="btn-set-floor" class="btn hidden">Set Floor</button>
+            </div>
+            <div class="menu-right">
+              <div id="place-controls" class="place-controls hidden">
+                <button id="btn-confirm-place" class="btn btn-success">Confirm</button>
+                <button id="btn-cancel-place" class="btn btn-cancel">Cancel</button>
+              </div>
+              <button id="btn-export" class="btn hidden">Export</button>
+              <button id="btn-import" class="btn hidden">Import</button>
+              <button id="btn-clear" class="btn btn-danger hidden">Clear</button>
+              <input id="file-import" type="file" accept="application/json" class="hidden">
+            </div>
           </div>
-          <button id="btn-export" class="hidden">Export POIs</button>
-          <button id="btn-import" class="hidden">Import POIs</button>
-          <button id="btn-clear" class="hidden">Clear All</button>
-          <input id="file-import" type="file" accept="application/json" class="hidden">
-          <div id="poi-list"></div>
+
+          <div id="poi-list" class="poi-list"></div>
         </div>
       </div>
+      <div class="panel-footer"><small>Tip: Scan QR untuk memulai</small></div>
     </div>
 
     <!-- Video used for QR scanning -->

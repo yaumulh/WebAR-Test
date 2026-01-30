@@ -28,6 +28,12 @@ Admin Manager (in-app)
   - Import POIs from JSON (replace or append)
   - Clear all POIs for the current anchor
 
+Floor calibration (non-WebXR fallback)
+- If WebXR/anchors are not available, you can still create a consistent floor reference after scanning the QR:
+  - Press **Set Floor** → enter your camera height (meters, e.g. 1.6) → point the camera to a visible floor point and tap.
+  - The app computes the floor intersection using the camera direction and the height you provided, and stores a floor reference (`anchor_meta_<anchorId>`) with `cameraHeight` and `floorPoint`.
+  - Future POI placements without AR will intersect placement rays with this floor plane (y=0 in anchor-local space), making navigation arrows point correctly on the floor plane.
+
 Web AR (Enter AR)
 - Use the **Enter AR** button to start a WebXR AR session (if supported by device).
   - The app shows a reticle (hit-test preview) where a POI would be placed.

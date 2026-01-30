@@ -20,6 +20,7 @@ const controls = document.getElementById('controls');
 const btnAdmin = document.getElementById('btn-admin');
 const btnAdd = document.getElementById('btn-add');
 const btnEnter = document.getElementById('btn-enter');
+const btnSetFloor = document.getElementById('btn-set-floor');
 const btnConfirmPlace = document.getElementById('btn-confirm-place');
 const btnCancelPlace = document.getElementById('btn-cancel-place');
 const placeControls = document.getElementById('place-controls');
@@ -42,6 +43,10 @@ let markers = []; // active marker meshes for POIs
 let ghost = null; // preview marker while placing
 let placementActive = false; // true when in placement flow
 let lastPlacedPose = null; // last hit pose matrix array
+
+// Anchor metadata (camera height, floor point etc.)
+let anchorMeta = null;
+let calibratingFloor = false;
 
 initThree();
 startVideoAndScan();
@@ -88,6 +93,8 @@ function initThree() {
   renderer = new THREE.WebGLRenderer({alpha: true});
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(window.devicePixelRatio);
+  // give canvas a class so CSS can target it cleanly
+  renderer.domElement.classList.add('xr-canvas');
   document.getElementById('xr-root').appendChild(renderer.domElement);
 
   // simple ground grid
@@ -172,7 +179,13 @@ function onQrDetected(data) {
   controls.classList.remove('hidden');
   video.classList.add('hidden');
   loadPois();
+  loadAnchorMeta();
   updateUI();
+  // Prompt to set camera height if no floor yet
+  if (!anchorMeta || !anchorMeta.floorSet) {
+    const setNow = confirm('Anchor terdeteksi. Mau set posisi lantai sekarang? (direkomendasikan)');
+    if (setNow) startFloorCalibration();
+  }
 }
 
 function updateUI() {
@@ -181,6 +194,7 @@ function updateUI() {
   btnImport.classList.toggle('hidden', !isAdmin);
   btnClear.classList.toggle('hidden', !isAdmin);
   btnEnter.classList.toggle('hidden', !anchorId);
+  btnSetFloor.classList.toggle('hidden', !anchorId);
   btnAdmin.innerText = isAdmin ? 'Logout admin' : 'Admin Login';
   renderPoiList();
 }
@@ -208,6 +222,51 @@ btnClear.addEventListener('click', ()=>{
     renderPoiList();
   }
 });
+
+// Set Floor workflow (user-assisted when no AR anchors available)
+btnSetFloor.addEventListener('click', startFloorCalibration);
+
+function startFloorCalibration() {
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  let h = parseFloat(prompt('Masukkan tinggi kamera dari lantai (meter)', '1.6'));
+  if (!h || isNaN(h) || h <= 0) { alert('Tinggi tidak valid'); return; }
+  anchorMeta = anchorMeta || {};
+  anchorMeta.cameraHeight = h;
+  anchorMeta.floorSet = false;
+  anchorMeta.floorPoint = null;
+  saveAnchorMeta();
+
+  statusEl.innerText = 'Kalibrasi lantai: arahkan kamera ke titik lantai yang ingin dijadikan referensi lalu tap layar';
+  calibratingFloor = true;
+
+  // Listen for a single tap on renderer canvas to capture floor point
+  const handler = (ev) => { captureFloorPoint(ev); renderer.domElement.removeEventListener('pointerdown', handler); };
+  renderer.domElement.addEventListener('pointerdown', handler, { once: true });
+}
+
+function captureFloorPoint(ev) {
+  if (!anchorMeta || !anchorMeta.cameraHeight) return alert('Tinggi kamera belum di-set');
+  // Use camera direction and the provided height to compute intersection with horizontal plane y=0
+  const h = anchorMeta.cameraHeight;
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  if (Math.abs(dir.y) < 0.05) { alert('Arahkan kamera sedikit ke bawah (lebih condong ke lantai)'); return; }
+  const origin = new THREE.Vector3(0, h, 0); // anchor origin is camera pose at QR scan; treat anchor y=0 as floor
+  const t = -origin.y / dir.y; // solve origin.y + t*dir.y = 0
+  if (t <= 0) { alert('Tidak menemukan perpotongan lantai. Arahkan kamera lebih ke bawah.'); return; }
+  const p = origin.clone().add(dir.multiplyScalar(t));
+  anchorMeta.floorSet = true;
+  anchorMeta.floorPoint = toSimple(p);
+  saveAnchorMeta();
+  statusEl.innerText = `Lantai diset (y=0). Titik referensi: (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`;
+  // show a small helper marker at floor point
+  const floorMarker = createPoiMarker({name: 'FloorRef', pos: anchorMeta.floorPoint});
+  floorMarker.traverse(c=>{ c.material && (c.material.opacity = 0.6); if (c.material) c.material.transparent = true; });
+  poiGroup.add(floorMarker);
+  markers.push(floorMarker);
+  calibratingFloor = false;
+  updateUI();
+}
 
 function exportPois() {
   if (!anchorId) return alert('Scan QR terlebih dahulu');
@@ -286,6 +345,18 @@ function loadPois() {
 }
 
 function keyForAnchor() { return `pois_${anchorId}`; }
+function keyForAnchorMeta() { return `anchor_meta_${anchorId}`; }
+
+function loadAnchorMeta() {
+  if (!anchorId) return;
+  const raw = localStorage.getItem(keyForAnchorMeta());
+  anchorMeta = raw ? JSON.parse(raw) : { cameraHeight: null, floorSet: false, floorPoint: null };
+}
+
+function saveAnchorMeta() {
+  if (!anchorId) return;
+  localStorage.setItem(keyForAnchorMeta(), JSON.stringify(anchorMeta));
+}
 
 function renderPoiList() {
   poiListEl.innerHTML = '';
@@ -347,13 +418,14 @@ function updateArrowInAr(poi) {
 }
 
 function updateArrowFallback(poi) {
-  // POI pos is stored in anchor-local coordinates; anchor is defined when QR scanned; we set anchor at world origin on scan
-  // camera is at origin in fallback; so compute direction on horizontal plane
+  // POI pos is stored in anchor-local coordinates; use camera height from anchorMeta for origin
   const p = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
-  const dir = new THREE.Vector3(p.x, 0, p.z).normalize();
-  arrowMesh.position.set(0, 0, 0);
+  const camH = (anchorMeta && anchorMeta.cameraHeight) ? anchorMeta.cameraHeight : 1.6;
+  const camOrigin = new THREE.Vector3(0, camH, 0);
+  const dir = p.clone().sub(camOrigin).setY(0).normalize();
+  arrowMesh.position.copy(camOrigin);
   arrowMesh.setDirection(dir);
-  arrowMesh.setLength(Math.min(10, new THREE.Vector3(p.x,p.y,p.z).length()), 0.3, 0.2);
+  arrowMesh.setLength(Math.min(20, camOrigin.distanceTo(p)), 0.3, 0.2);
 }
 
 function toSimple(v) {
@@ -468,11 +540,29 @@ async function startArPlacement(options = {}) {
         const m = new THREE.Matrix4().fromArray(lastHit);
         m.decompose(pos, quat, new THREE.Vector3());
       } else {
-        // fallback 2m ahead of camera
+            // fallback: if floor calibration exists, intersect camera center ray with floor plane y=0
+      if (anchorMeta && anchorMeta.floorSet) {
+        const h = anchorMeta.cameraHeight;
+        const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+        const origin = new THREE.Vector3(0, h, 0);
+        if (Math.abs(dir.y) < 0.05) {
+          // almost horizontal — fallback to 2m
+          camera.getWorldPosition(pos);
+          camera.getWorldQuaternion(quat);
+          const forward = new THREE.Vector3(0,0,-1).applyQuaternion(quat);
+          pos.add(forward.multiplyScalar(2));
+        } else {
+          const t = -origin.y / dir.y;
+          pos.copy(origin.add(dir.multiplyScalar(t)));
+          camera.getWorldQuaternion(quat);
+        }
+      } else {
+        // no floor calibration — fallback 2m ahead
         camera.getWorldPosition(pos);
         camera.getWorldQuaternion(quat);
         const forward = new THREE.Vector3(0,0,-1).applyQuaternion(quat);
         pos.add(forward.multiplyScalar(2));
+      }
       }
 
       // show ghost at current candidate and enable confirm UI
