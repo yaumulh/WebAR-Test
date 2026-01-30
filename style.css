@@ -11,5 +11,8 @@ html,body,#app{ height:100%; margin:0; }
 button { padding:8px 10px; border-radius:6px; border: none; cursor:pointer; background: #0078d4; color: #fff; }
 button.del { background: #a70000; }
 #file-import { display:none; }
+#place-controls { margin-left:6px; }
+#btn-confirm-place { background: #1aab8a; }
+#btn-cancel-place { background: #a70000; }
 .poi-item{ margin-top:8px; display:flex; gap:8px; align-items:center; }
 .poi-item button{ margin-left:6px; }

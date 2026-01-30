@@ -19,6 +19,10 @@ const statusEl = document.getElementById('status');
 const controls = document.getElementById('controls');
 const btnAdmin = document.getElementById('btn-admin');
 const btnAdd = document.getElementById('btn-add');
+const btnEnter = document.getElementById('btn-enter');
+const btnConfirmPlace = document.getElementById('btn-confirm-place');
+const btnCancelPlace = document.getElementById('btn-cancel-place');
+const placeControls = document.getElementById('place-controls');
 const btnExport = document.getElementById('btn-export');
 const btnImport = document.getElementById('btn-import');
 const btnClear = document.getElementById('btn-clear');
@@ -32,6 +36,12 @@ let pois = []; // current anchor POIs
 // three.js
 let scene, camera, renderer, arrowMesh;
 let xrSession = null;
+let poiGroup = null; // group of POI markers in scene
+let reticle = null; // hit-test preview reticle
+let markers = []; // active marker meshes for POIs
+let ghost = null; // preview marker while placing
+let placementActive = false; // true when in placement flow
+let lastPlacedPose = null; // last hit pose matrix array
 
 initThree();
 startVideoAndScan();
@@ -84,11 +94,27 @@ function initThree() {
   const grid = new THREE.GridHelper(20, 20, 0x888888, 0x222222);
   scene.add(grid);
 
+  // lighting for AR markers
+  const amb = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(amb);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(0.5, 1, 0.5);
+  scene.add(dirLight);
+
+  // group for POI markers
+  poiGroup = new THREE.Group();
+  scene.add(poiGroup);
+
   // arrow helper
   const dir = new THREE.Vector3(0,0,-1);
   arrowMesh = new THREE.ArrowHelper(dir, new THREE.Vector3(0,0,0), 1, 0xff0000, 0.3, 0.2);
   arrowMesh.visible = false;
   scene.add(arrowMesh);
+
+  // reticle for hit-test preview
+  reticle = createReticle();
+  reticle.visible = false;
+  scene.add(reticle);
 
   window.addEventListener('resize', ()=>{
     camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
@@ -99,6 +125,17 @@ function initThree() {
 function animate() {
   requestAnimationFrame(animate);
   renderer.render(scene, camera);
+}
+
+function createReticle() {
+  const r = new THREE.Group();
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.08, 32), new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI / 2;
+  r.add(ring);
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.02, 16), new THREE.MeshBasicMaterial({ color: 0x00ffcc }));
+  dot.rotation.x = -Math.PI / 2;
+  r.add(dot);
+  return r;
 }
 
 async function startVideoAndScan() {
@@ -143,9 +180,15 @@ function updateUI() {
   btnExport.classList.toggle('hidden', !isAdmin);
   btnImport.classList.toggle('hidden', !isAdmin);
   btnClear.classList.toggle('hidden', !isAdmin);
+  btnEnter.classList.toggle('hidden', !anchorId);
   btnAdmin.innerText = isAdmin ? 'Logout admin' : 'Admin Login';
   renderPoiList();
 }
+
+btnEnter.addEventListener('click', async ()=>{
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  await startArView();
+});
 
 function savePoi(poi) {
   pois.push(poi);
@@ -318,9 +361,73 @@ function toSimple(v) {
   return {x:v.x,y:v.y,z:v.z};
 }
 
+function createPoiMarker(poi) {
+  const g = new THREE.Group();
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 12), new THREE.MeshStandardMaterial({ color: 0xffcc00 }));
+  g.add(sphere);
+  // simple canvas label
+  const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,256,64);
+  ctx.fillStyle = '#fff'; ctx.font = '30px sans-serif'; ctx.fillText(poi.name || '', 8,42);
+  const tex = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex }));
+  sprite.scale.set(0.6, 0.15, 1);
+  sprite.position.set(0, 0.25, 0);
+  g.add(sprite);
+  g.position.set(poi.pos.x, poi.pos.y, poi.pos.z);
+  return g;
+}
+
+function refreshPoiMarkers() {
+  clearPoiMarkers();
+  pois.forEach(p=>{
+    if (p.pos) {
+      const m = createPoiMarker(p);
+      poiGroup.add(m);
+      markers.push(m);
+    }
+  });
+}
+
+function clearPoiMarkers() {
+  markers.forEach(m=>{ poiGroup.remove(m); m.traverse((c)=>{ if (c.geometry) c.geometry.dispose(); if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose(); } }); });
+  markers = [];
+}
+
+function createGhostMarker() {
+  const g = new THREE.Group();
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0x00ccff, transparent: true, opacity: 0.45 }));
+  g.add(sphere);
+  const label = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshBasicMaterial({ color:0x000000, transparent:true, opacity:0.5 }));
+  label.position.set(0,0.25,0);
+  g.add(label);
+  g.visible = false;
+  scene.add(g);
+  return g;
+}
+
+function showGhostAt(pos, quat) {
+  if (!ghost) ghost = createGhostMarker();
+  ghost.position.copy(pos);
+  ghost.quaternion.copy(quat);
+  ghost.visible = true;
+}
+
+function hideGhost() {
+  if (ghost) ghost.visible = false;
+}
+
+function enablePlacementUI(enabled) {
+  placementActive = enabled;
+  placeControls.classList.toggle('hidden', !enabled);
+  btnConfirmPlace.disabled = !enabled;
+  btnCancelPlace.disabled = !enabled;
+}
+
 async function startArPlacement(options = {}) {
   try {
-    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], domOverlay: { root: document.getElementById('app') } });
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], optionalFeatures: ['anchors'], domOverlay: { root: document.getElementById('app') } });
     xrSession = session;
     renderer.xr.enabled = true;
     await renderer.xr.setSession(session);
@@ -330,6 +437,7 @@ async function startArPlacement(options = {}) {
     const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
 
     statusEl.innerText = 'AR session aktif: tap layar untuk menempatkan POI';
+    enablePlacementUI(false); // UI will be enabled when user taps to choose placement (or reticle available)
 
     let lastHit = null;
     const onXRFrame = (time, frame) => {
@@ -339,9 +447,15 @@ async function startArPlacement(options = {}) {
       if (!viewerPose) return;
       const hitTestResults = frame.getHitTestResults(hitTestSource);
       if (hitTestResults.length > 0) {
-        const hit = hitTestResults[0];
-        const pose = hit.getPose(refSpace);
+        const pose = hitTestResults[0].getPose(refSpace);
         lastHit = pose.transform.matrix;
+        if (reticle) {
+          const m = new THREE.Matrix4().fromArray(lastHit);
+          m.decompose(reticle.position, reticle.quaternion, reticle.scale);
+          reticle.visible = true;
+        }
+      } else {
+        if (reticle) reticle.visible = false;
       }
     };
     session.requestAnimationFrame(onXRFrame);
@@ -361,18 +475,47 @@ async function startArPlacement(options = {}) {
         pos.add(forward.multiplyScalar(2));
       }
 
+      // show ghost at current candidate and enable confirm UI
+      lastPlacedPose = { pos: pos.clone(), quat: quat.clone() };
+      showGhostAt(pos, quat);
+      enablePlacementUI(true);
+
+      // on direct tap, user might want to confirm immediately by pointerdown -> confirm placement
+    };
+
+    renderer.domElement.addEventListener('pointerdown', placeListener);
+
+    const confirmHandler = async () => {
+      if (!lastPlacedPose) return;
+      const pos = lastPlacedPose.pos;
+      const quat = lastPlacedPose.quat;
       if (options.onPlaced) {
         options.onPlaced(pos, quat);
       } else {
         const name = prompt('Nama POI');
         if (name) savePoi({name, pos: toSimple(pos), quat: toSimple(quat)});
       }
-      if (options.endAfterPlace !== false) {
-        await endArSession();
-      }
+      hideGhost();
+      enablePlacementUI(false);
+      if (options.endAfterPlace !== false) await endArSession();
     };
 
-    renderer.domElement.addEventListener('pointerdown', placeListener, { once: true });
+    const cancelHandler = async () => {
+      hideGhost();
+      enablePlacementUI(false);
+      lastPlacedPose = null;
+      if (options.endAfterPlace !== false) await endArSession();
+    };
+
+    btnConfirmPlace.addEventListener('click', confirmHandler);
+    btnCancelPlace.addEventListener('click', cancelHandler);
+
+    // cleanup when session ends
+    session.addEventListener('end', ()=>{
+      hideGhost(); enablePlacementUI(false); lastPlacedPose = null;
+      btnConfirmPlace.removeEventListener('click', confirmHandler);
+      btnCancelPlace.removeEventListener('click', cancelHandler);
+    });
 
   } catch (e) {
     console.error('AR start failed', e);
@@ -385,8 +528,58 @@ async function endArSession() {
   await xrSession.end();
   xrSession = null;
   renderer.xr.enabled = false;
+  // hide reticle and clear POI markers
+  if (reticle) reticle.visible = false;
+  hideGhost();
+  enablePlacementUI(false);
+  clearPoiMarkers();
+  arrowMesh.visible = false;
   statusEl.innerText = 'AR session selesai';
   updateUI();
+}
+
+async function startArView() {
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], optionalFeatures: ['anchors'], domOverlay: { root: document.getElementById('app') } });
+    xrSession = session;
+    renderer.xr.enabled = true;
+    await renderer.xr.setSession(session);
+
+    const refSpace = await session.requestReferenceSpace('local');
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+    statusEl.innerText = 'AR view aktif — arahkan perangkat ke sekeliling untuk melihat POI';
+
+    // create markers for existing POIs
+    refreshPoiMarkers();
+
+    session.requestAnimationFrame(function onFrame(time, frame){
+      session.requestAnimationFrame(onFrame);
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (!viewerPose) return;
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      if (hitTestResults.length > 0) {
+        const pose = hitTestResults[0].getPose(refSpace);
+        if (pose && reticle) {
+          reticle.visible = true;
+          const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+          m.decompose(reticle.position, reticle.quaternion, reticle.scale);
+        }
+      } else {
+        if (reticle) reticle.visible = false;
+      }
+
+      // update arrow if navigating
+      // update marker visibility (optional); markers are static at saved world positions
+    });
+
+    session.addEventListener('end', ()=>endArSession());
+
+  } catch (e) {
+    console.error('AR view failed', e);
+    alert('Gagal memulai AR view: ' + e.message);
+  }
 }
 
 /* Notes for developer:

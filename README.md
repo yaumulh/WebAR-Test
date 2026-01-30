@@ -28,6 +28,14 @@ Admin Manager (in-app)
   - Import POIs from JSON (replace or append)
   - Clear all POIs for the current anchor
 
+Web AR (Enter AR)
+- Use the **Enter AR** button to start a WebXR AR session (if supported by device).
+  - The app shows a reticle (hit-test preview) where a POI would be placed.
+  - When placing a POI the app shows a **ghost** semi-transparent marker at the candidate pose so you can preview position & orientation before saving.
+  - Placement flow: point device → tap to choose placement candidate (or wait for reticle) → use **Confirm Place** to finalize or **Cancel** to abort.
+  - You can also reposition POIs using AR placement that uses the same ghost + confirm flow.
+  - If the device supports `anchors`, the session will request the feature and use hit-test poses for placement; positions are still saved to localStorage for persistence across sessions.
+
 Files
 - `index.html` — UI + includes
 - `src/app.js` — application logic (QR, three.js scene, WebXR fallback)
