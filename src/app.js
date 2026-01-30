@@ -1,0 +1,397 @@
+import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
+
+/*
+Starter app features:
+- Scan QR to set an "anchor id"
+- Use WebXR AR hit-test to place POIs if available, otherwise fallback to placing POI 2m in front
+- Save POIs per anchor in localStorage
+- Simple admin login (password prompt, default "admin") to show Add button
+- Navigation: arrow points towards selected POI (works in AR session; fallback uses device orientation for bearing)
+
+Limitations:
+- This is a prototype. For robust, persistent real-world anchors across sessions use platform anchors (ARCore/ARKit) via WebXR Anchors or a backend mapping service.
+*/
+
+const video = document.getElementById('video');
+const scanCanvas = document.getElementById('scan-canvas');
+const scanCtx = scanCanvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const controls = document.getElementById('controls');
+const btnAdmin = document.getElementById('btn-admin');
+const btnAdd = document.getElementById('btn-add');
+const btnExport = document.getElementById('btn-export');
+const btnImport = document.getElementById('btn-import');
+const btnClear = document.getElementById('btn-clear');
+const fileImport = document.getElementById('file-import');
+const poiListEl = document.getElementById('poi-list');
+
+let anchorId = null; // set by QR payload
+let isAdmin = localStorage.getItem('isAdmin') === 'true';
+let pois = []; // current anchor POIs
+
+// three.js
+let scene, camera, renderer, arrowMesh;
+let xrSession = null;
+
+initThree();
+startVideoAndScan();
+updateUI();
+
+btnAdmin.addEventListener('click', async () => {
+  if (!isAdmin) {
+    const pw = prompt('Masukkan password admin:');
+    if (pw === 'admin') {
+      isAdmin = true; localStorage.setItem('isAdmin', 'true');
+      updateUI();
+      alert('Admin mode aktif');
+    } else alert('Password salah');
+  } else {
+    isAdmin = false; localStorage.setItem('isAdmin', 'false'); updateUI();
+  }
+});
+
+btnAdd.addEventListener('click', async () => {
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  // Prefer WebXR hit-test placement (interactive). Fallback: place 2m ahead.
+  if (navigator.xr && await navigator.xr.isSessionSupported && await navigator.xr.isSessionSupported('immersive-ar')) {
+    const use = confirm('WebXR AR tersedia. Gunakan untuk menempatkan POI? (Tap layar untuk menempatkan)');
+    if (use) {
+      await startArPlacement();
+      return;
+    }
+  }
+  // fallback: create POI 2m in front of camera
+  const dist = parseFloat(prompt('Jarak dari kamera (meter)', '2')) || 2;
+  const name = prompt('Nama POI');
+  if (!name) return;
+  // camera world forward in three.js coordinate is -Z
+  const forward = new THREE.Vector3(0, 0, -1);
+  forward.applyQuaternion(camera.quaternion);
+  const pos = camera.position.clone().add(forward.multiplyScalar(dist));
+  const q = camera.quaternion.clone();
+  savePoi({name, pos: toSimple(pos), quat: toSimple(q)});
+});
+
+function initThree() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 1000);
+  renderer = new THREE.WebGLRenderer({alpha: true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.getElementById('xr-root').appendChild(renderer.domElement);
+
+  // simple ground grid
+  const grid = new THREE.GridHelper(20, 20, 0x888888, 0x222222);
+  scene.add(grid);
+
+  // arrow helper
+  const dir = new THREE.Vector3(0,0,-1);
+  arrowMesh = new THREE.ArrowHelper(dir, new THREE.Vector3(0,0,0), 1, 0xff0000, 0.3, 0.2);
+  arrowMesh.visible = false;
+  scene.add(arrowMesh);
+
+  window.addEventListener('resize', ()=>{
+    camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+
+async function startVideoAndScan() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = stream;
+    await video.play();
+
+    scanCanvas.width = video.videoWidth || 640;
+    scanCanvas.height = video.videoHeight || 480;
+    scanLoop();
+  } catch(e) {
+    console.error(e);
+    statusEl.innerText = 'Gagal akses kamera: ' + e.message;
+  }
+}
+
+function scanLoop() {
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+    const imageData = scanCtx.getImageData(0,0, scanCanvas.width, scanCanvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height);
+    if (code) {
+      onQrDetected(code.data);
+      return; // stop scanning further
+    }
+  }
+  requestAnimationFrame(scanLoop);
+}
+
+function onQrDetected(data) {
+  anchorId = data || 'anchor:' + Date.now();
+  statusEl.innerText = `QR terdeteksi — anchor: ${anchorId}`;
+  controls.classList.remove('hidden');
+  video.classList.add('hidden');
+  loadPois();
+  updateUI();
+}
+
+function updateUI() {
+  btnAdd.classList.toggle('hidden', !isAdmin);
+  btnExport.classList.toggle('hidden', !isAdmin);
+  btnImport.classList.toggle('hidden', !isAdmin);
+  btnClear.classList.toggle('hidden', !isAdmin);
+  btnAdmin.innerText = isAdmin ? 'Logout admin' : 'Admin Login';
+  renderPoiList();
+}
+
+function savePoi(poi) {
+  pois.push(poi);
+  localStorage.setItem(keyForAnchor(), JSON.stringify(pois));
+  renderPoiList();
+}
+
+// Admin export/import/clear + reposition helpers
+btnExport.addEventListener('click', exportPois);
+btnImport.addEventListener('click', ()=>fileImport.click());
+fileImport.addEventListener('change', handleFileImport);
+btnClear.addEventListener('click', ()=>{
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  if (confirm('Hapus semua POI untuk anchor ini?')) {
+    pois = [];
+    localStorage.removeItem(keyForAnchor());
+    renderPoiList();
+  }
+});
+
+function exportPois() {
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  const data = JSON.stringify({anchor: anchorId, pois: pois}, null, 2);
+  const blob = new Blob([data], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${anchorId}-pois.json`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function handleFileImport(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (Array.isArray(parsed)) {
+         importPoisJSON(parsed);
+      } else if (parsed && parsed.pois) {
+         importPoisJSON(parsed.pois);
+      } else {
+         alert('File JSON tidak mengenali format POI');
+      }
+    } catch (err) { alert('Import gagal: ' + err.message); }
+  };
+  r.readAsText(f);
+  fileImport.value = '';
+}
+
+function importPoisJSON(data) {
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  const replace = confirm('Ganti POI yang ada? (Cancel untuk menambah)');
+  if (replace) {
+    pois = data;
+  } else {
+    pois = pois.concat(data);
+  }
+  localStorage.setItem(keyForAnchor(), JSON.stringify(pois));
+  renderPoiList();
+}
+
+async function repositionPoi(idx) {
+  if (!anchorId) return alert('Scan QR terlebih dahulu');
+  if (navigator.xr && await navigator.xr.isSessionSupported && await navigator.xr.isSessionSupported('immersive-ar')) {
+    const use = confirm('Gunakan AR untuk menempatkan ulang POI? (tap layar)');
+    if (use) {
+      await startArPlacement({
+        onPlaced: (pos, quat) => {
+          pois[idx].pos = toSimple(pos);
+          pois[idx].quat = toSimple(quat);
+          localStorage.setItem(keyForAnchor(), JSON.stringify(pois));
+          renderPoiList();
+        },
+        endAfterPlace: true
+      });
+      return;
+    }
+  }
+  const dist = parseFloat(prompt('Jarak dari kamera (meter)', '2')) || 2;
+  const forward = new THREE.Vector3(0,0,-1);
+  forward.applyQuaternion(camera.quaternion);
+  const pos = camera.position.clone().add(forward.multiplyScalar(dist));
+  const q = camera.quaternion.clone();
+  pois[idx].pos = toSimple(pos);
+  pois[idx].quat = toSimple(q);
+  localStorage.setItem(keyForAnchor(), JSON.stringify(pois));
+  renderPoiList();
+}
+
+function loadPois() {
+  if (!anchorId) return;
+  const raw = localStorage.getItem(keyForAnchor());
+  pois = raw ? JSON.parse(raw) : [];
+}
+
+function keyForAnchor() { return `pois_${anchorId}`; }
+
+function renderPoiList() {
+  poiListEl.innerHTML = '';
+  pois.forEach((p, i)=>{
+    const el = document.createElement('div');
+    el.className = 'poi-item';
+    el.innerHTML = `<strong>${p.name}</strong>
+      <button class="nav" data-i="${i}">Navigate</button>
+      ${isAdmin?'<button class="edit" data-i="'+i+'">Edit</button>':''}
+      ${isAdmin?'<button class="repos" data-i="'+i+'">Reposition</button>':''}
+      ${isAdmin?'<button class="del" data-i="'+i+'">Del</button>':''}`;
+    poiListEl.appendChild(el);
+  });
+  poiListEl.querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', async (ev)=>{
+      const idx = parseInt(ev.target.dataset.i);
+      if (ev.target.classList.contains('del')) {
+        if (!confirm('Hapus POI ini?')) return;
+        pois.splice(idx,1); localStorage.setItem(keyForAnchor(), JSON.stringify(pois)); renderPoiList(); return;
+      }
+      if (ev.target.classList.contains('edit')) {
+        const name = prompt('Nama baru', pois[idx].name);
+        if (name) { pois[idx].name = name; localStorage.setItem(keyForAnchor(), JSON.stringify(pois)); renderPoiList(); }
+        return;
+      }
+      if (ev.target.classList.contains('repos')) {
+        await repositionPoi(idx);
+        return;
+      }
+      // default: navigate
+      startNavigateTo(pois[idx]);
+    });
+  });
+}
+
+function startNavigateTo(poi) {
+  arrowMesh.visible = true;
+  if (xrSession) {
+    // In AR session we can compute world positions directly - POI stored with world positions when placed via AR
+    // Implementation: we assume poi.pos is world position vector [x,y,z]
+    requestAnimationFrame(()=>updateArrowInAr(poi));
+  } else {
+    // fallback: compute azimuth using deviceorientation and POI relative pos stored as pos {x,y,z}
+    updateArrowFallback(poi);
+  }
+}
+
+function updateArrowInAr(poi) {
+  // If the POI contains a world position, use it; otherwise try local coordenates
+  const p = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
+  // compute camera world position
+  const camWorld = new THREE.Vector3(); camera.getWorldPosition(camWorld);
+  const dir = p.clone().sub(camWorld).normalize();
+  arrowMesh.position.copy(camWorld);
+  arrowMesh.setDirection(dir);
+  arrowMesh.setLength(Math.min(10, camWorld.distanceTo(p)), 0.3, 0.2);
+  // keep updating while visible
+  if (arrowMesh.visible) requestAnimationFrame(()=>updateArrowInAr(poi));
+}
+
+function updateArrowFallback(poi) {
+  // POI pos is stored in anchor-local coordinates; anchor is defined when QR scanned; we set anchor at world origin on scan
+  // camera is at origin in fallback; so compute direction on horizontal plane
+  const p = new THREE.Vector3(poi.pos.x, poi.pos.y, poi.pos.z);
+  const dir = new THREE.Vector3(p.x, 0, p.z).normalize();
+  arrowMesh.position.set(0, 0, 0);
+  arrowMesh.setDirection(dir);
+  arrowMesh.setLength(Math.min(10, new THREE.Vector3(p.x,p.y,p.z).length()), 0.3, 0.2);
+}
+
+function toSimple(v) {
+  if (v.isQuaternion) return {x:v.x,y:v.y,z:v.z,w:v.w};
+  return {x:v.x,y:v.y,z:v.z};
+}
+
+async function startArPlacement(options = {}) {
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], domOverlay: { root: document.getElementById('app') } });
+    xrSession = session;
+    renderer.xr.enabled = true;
+    await renderer.xr.setSession(session);
+
+    const refSpace = await session.requestReferenceSpace('local');
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+
+    statusEl.innerText = 'AR session aktif: tap layar untuk menempatkan POI';
+
+    let lastHit = null;
+    const onXRFrame = (time, frame) => {
+      const session = frame.session;
+      session.requestAnimationFrame(onXRFrame);
+      const viewerPose = frame.getViewerPose(refSpace);
+      if (!viewerPose) return;
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      if (hitTestResults.length > 0) {
+        const hit = hitTestResults[0];
+        const pose = hit.getPose(refSpace);
+        lastHit = pose.transform.matrix;
+      }
+    };
+    session.requestAnimationFrame(onXRFrame);
+
+    const placeListener = async (ev) => {
+      // use lastHit if available; otherwise fallback to camera 2m ahead
+      let pos = new THREE.Vector3();
+      let quat = new THREE.Quaternion();
+      if (lastHit) {
+        const m = new THREE.Matrix4().fromArray(lastHit);
+        m.decompose(pos, quat, new THREE.Vector3());
+      } else {
+        // fallback 2m ahead of camera
+        camera.getWorldPosition(pos);
+        camera.getWorldQuaternion(quat);
+        const forward = new THREE.Vector3(0,0,-1).applyQuaternion(quat);
+        pos.add(forward.multiplyScalar(2));
+      }
+
+      if (options.onPlaced) {
+        options.onPlaced(pos, quat);
+      } else {
+        const name = prompt('Nama POI');
+        if (name) savePoi({name, pos: toSimple(pos), quat: toSimple(quat)});
+      }
+      if (options.endAfterPlace !== false) {
+        await endArSession();
+      }
+    };
+
+    renderer.domElement.addEventListener('pointerdown', placeListener, { once: true });
+
+  } catch (e) {
+    console.error('AR start failed', e);
+    alert('Gagal memulai AR: ' + e.message);
+  }
+}
+
+async function endArSession() {
+  if (!xrSession) return;
+  await xrSession.end();
+  xrSession = null;
+  renderer.xr.enabled = false;
+  statusEl.innerText = 'AR session selesai';
+  updateUI();
+}
+
+/* Notes for developer:
+ - This is starter scaffolding. For production you should:
+   - Implement robust AR placement using real hit-test results and anchors
+   - Use a backend (Firestore, etc) if you need cross-device consistency
+   - Improve admin authentication (no plain prompt)
+*/

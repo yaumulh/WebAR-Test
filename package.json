@@ -1,0 +1,10 @@
+{
+  "name": "rs-wayfinder-starter",
+  "version": "0.1.0",
+  "description": "Starter for QR-anchored WebXR indoor navigation (three.js + jsQR)",
+  "scripts": {
+    "start": "npx http-server -c-1 -p 8080"
+  },
+  "author": "",
+  "license": "MIT"
+}

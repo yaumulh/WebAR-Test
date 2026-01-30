@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>RS Wayfinder - Starter (QR → AR)</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <div id="overlay">
+      <h1>RS Wayfinder — Starter</h1>
+      <div id="status">Menunggu scan QR...</div>
+      <div id="controls" class="hidden">
+        <div id="menu">
+          <button id="btn-admin">Admin Login</button>
+          <button id="btn-add" class="hidden">Add POI</button>
+          <button id="btn-export" class="hidden">Export POIs</button>
+          <button id="btn-import" class="hidden">Import POIs</button>
+          <button id="btn-clear" class="hidden">Clear All</button>
+          <input id="file-import" type="file" accept="application/json" class="hidden">
+          <div id="poi-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Video used for QR scanning -->
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="scan-canvas" class="hidden"></canvas>
+
+    <!-- three.js canvas (renderer will append) -->
+    <div id="xr-root"></div>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script src="https://unpkg.com/jsqr/dist/jsQR.js"></script>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

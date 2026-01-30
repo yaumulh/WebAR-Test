@@ -1,0 +1,15 @@
+* { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; }
+html,body,#app{ height:100%; margin:0; }
+#overlay { position: absolute; left: 12px; top: 12px; z-index: 20; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+#overlay h1 { margin:0 0 6px 0; font-size:18px; }
+#status { background: rgba(0,0,0,0.5); padding:8px 10px; border-radius:6px; display:inline-block; }
+#controls { margin-top:10px; }
+.hidden { display:none; }
+#video { position: absolute; right: 12px; bottom: 12px; width: 160px; height: 120px; z-index: 15; border-radius:8px; object-fit:cover; }
+#xr-root canvas { position: absolute; inset: 0; }
+#menu { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+button { padding:8px 10px; border-radius:6px; border: none; cursor:pointer; background: #0078d4; color: #fff; }
+button.del { background: #a70000; }
+#file-import { display:none; }
+.poi-item{ margin-top:8px; display:flex; gap:8px; align-items:center; }
+.poi-item button{ margin-left:6px; }
