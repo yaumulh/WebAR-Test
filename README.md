@@ -42,6 +42,9 @@ Web AR (Enter AR)
   - You can also reposition POIs using AR placement that uses the same ghost + confirm flow.
   - If the device supports `anchors`, the session will request the feature and use hit-test poses for placement; positions are still saved to localStorage for persistence across sessions.
 
+Note about camera preview duplication
+- You may see two camera previews if both the QR-scanner video element (used for jsQR) is visible and an AR session (WebXR) is active. The app now stops the scanner video stream after QR detection and before starting an AR session so only the WebXR camera feed is shown. If you still see two feeds: refresh the page and try again, or stop the page's camera access from the browser site settings and try once more.
+
 Files
 - `index.html` — UI + includes
 - `src/app.js` — application logic (QR, three.js scene, WebXR fallback)

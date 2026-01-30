@@ -145,10 +145,14 @@ function createReticle() {
   return r;
 }
 
+let videoStream = null; // active getUserMedia stream
+
 async function startVideoAndScan() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    videoStream = stream;
     video.srcObject = stream;
+    video.classList.remove('hidden');
     await video.play();
 
     scanCanvas.width = video.videoWidth || 640;
@@ -158,6 +162,16 @@ async function startVideoAndScan() {
     console.error(e);
     statusEl.innerText = 'Gagal akses kamera: ' + e.message;
   }
+}
+
+function stopVideoStream() {
+  if (!videoStream) return;
+  try {
+    videoStream.getTracks().forEach(t => t.stop());
+  } catch(e){ console.warn('stopVideoStream failed', e); }
+  video.srcObject = null;
+  videoStream = null;
+  video.classList.add('hidden');
 }
 
 function scanLoop() {
@@ -177,7 +191,8 @@ function onQrDetected(data) {
   anchorId = data || 'anchor:' + Date.now();
   statusEl.innerText = `QR terdeteksi — anchor: ${anchorId}`;
   controls.classList.remove('hidden');
-  video.classList.add('hidden');
+  // stop the scanning camera to avoid conflicts with WebXR and to hide duplicate preview
+  stopVideoStream();
   loadPois();
   loadAnchorMeta();
   updateUI();
@@ -499,6 +514,9 @@ function enablePlacementUI(enabled) {
 
 async function startArPlacement(options = {}) {
   try {
+    // stop scanning camera so the device's camera feed will be used by WebXR (prevents two previews)
+    stopVideoStream();
+
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], optionalFeatures: ['anchors'], domOverlay: { root: document.getElementById('app') } });
     xrSession = session;
     renderer.xr.enabled = true;
@@ -630,6 +648,9 @@ async function endArSession() {
 
 async function startArView() {
   try {
+    // stop scanning camera if still active (prevents two camera previews)
+    stopVideoStream();
+
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test','dom-overlay'], optionalFeatures: ['anchors'], domOverlay: { root: document.getElementById('app') } });
     xrSession = session;
     renderer.xr.enabled = true;
